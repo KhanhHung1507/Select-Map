@@ -1,45 +1,116 @@
-// Global variables
-let map;
-let mapLocked = false;
-let selectedObject = null;
-let mapData = null;
-const VIETNAM_BOUNDS = [
-    [8.5, 102.0],    // Southwest
-    [23.5, 109.5]    // Northeast
-];
-const VIETNAM_CENTER = [15.8700, 106.6837]; // Hanoi
+// ==========================================
+// BASIC CONFIGURATION & GLOBAL VARIABLES
+// ==========================================
+let map, mapData = null, mapLocked = false;
+const VIETNAM_BOUNDS = [[8.5, 102.0], [23.5, 109.5]];
 const BACKEND_URL = 'http://127.0.0.1:8080';
 
-// Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
     initMap();
     setupEventListeners();
-    loadMapData();
 });
 
 // Initialize Leaflet map
 function initMap() {
-    map = L.map('map').setView(VIETNAM_CENTER, 6);
-
-    // Restrict map bounds to Vietnam initially
+    map = L.map('map').setView([15.8700, 106.6837], 6); // Center of Vietnam
     map.setMaxBounds(VIETNAM_BOUNDS);
     
-    // CRITICAL FIX: Only restrict to Vietnam bounds if the map is NOT locked
-    map.on('drag', function () {
-        if (!mapLocked) {
-            map.panInsideBounds(VIETNAM_BOUNDS, { animate: false });
-        }
+    // Restrict to Vietnam bounds only if the map is not locked
+    map.on('drag', () => { 
+        if (!mapLocked) map.panInsideBounds(VIETNAM_BOUNDS, { animate: false }); 
     });
 
-    // Add tile layer
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors',
-        minZoom: 4,
-        maxZoom: 18
-    }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxNativeZoom: 19, maxZoom: 20 }).addTo(map);
+}
 
-    // Make map draggable initially
-    map.dragging.enable();
+// ==========================================
+// DATA PROCESSING & BACKEND COMMUNICATION
+// ==========================================
+async function confirmMapSelection() {
+    if (map.getZoom() < 15) {
+        return alert("Please zoom in closer (level 15+) to avoid server overload!");
+    }
+
+    lockMap(); // Lock the camera immediately
+    const b = map.getBounds();
+    const mapBounds = { north: b.getNorth(), south: b.getSouth(), east: b.getEast(), west: b.getWest() };
+
+    try {
+        console.log('[Frontend] 1. Fetching data from Overpass API...');
+        // 1. Fetch data from Overpass API (Using JS to avoid complex SSL libs in C++)
+        const query = `[out:json][timeout:25];(way["highway"](${mapBounds.south}, ${mapBounds.west}, ${mapBounds.north}, ${mapBounds.east}););out body;>;out skel qt;`;
+        const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+        const { elements } = await res.json();
+
+        console.log('[Frontend] 2. Processing and cleaning data...');
+        // 2. Data Pre-processing: Simplify using Object and Array methods
+        const nodes = elements.filter(e => e.type === 'node').reduce((acc, n) => { acc[n.id] = [n.lat, n.lon]; return acc; }, {});
+        const nodeCount = {}; 
+        const roads = [];
+
+        elements.filter(e => e.type === 'way' && e.nodes).forEach(way => {
+            const coords = way.nodes.map(id => {
+                if (nodes[id]) nodeCount[id] = (nodeCount[id] || 0) + 1; // Count node frequency
+                return nodes[id];
+            }).filter(Boolean); // Remove undefined nodes
+
+            if (coords.length > 1) {
+                roads.push({
+                    id: way.id,
+                    name: way.tags?.name || `Road ${way.tags?.highway || ''}`,
+                    type: "road", 
+                    width: 1,
+                    coordinates: coords
+                });
+            }
+        });
+
+        // Nodes present on >1 road are Intersections
+        const intersections = Object.entries(nodeCount)
+            .filter(([id, count]) => count > 1 && nodes[id])
+            .map(([id]) => ({ id: Number(id), type: "intersection", coordinates: nodes[id] }));
+
+        console.log('[Frontend] 3. Sending processed data to C++ Backend...');
+        // 3. Send "clean" data to C++ Backend for storage
+        const finalData = { bounds: mapBounds, roads, intersections, vehicles: [] };
+        const cppRes = await fetch(`${BACKEND_URL}/api/confirm-map`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(finalData)
+        });
+
+        if (!cppRes.ok) throw new Error("Backend C++ refused to save the file!");
+
+        console.log('[Frontend] 4. Setup successful. Switching UI mode.');
+        // 4. Switch UI to Simulation mode
+        document.getElementById('initialControls').classList.add('hidden');
+        document.getElementById('simulationControls').classList.remove('hidden');
+        
+        mapData = finalData;
+        renderMapElements(); // Render lines and markers on the map
+
+    } catch (error) {
+        console.error('[Frontend] Error:', error);
+        alert(error.message);
+        unlockMap(); // Unlock map if an error occurs
+    }
+}
+
+// ==========================================
+// UI HELPER FUNCTIONS
+// ==========================================
+function lockMap() {
+    mapLocked = true;
+    map.options.maxBoundsViscosity = 1.0;
+    map.setMaxBounds(map.getBounds().pad(0.02)); // Pad 2% to prevent Leaflet bouncing glitches
+    map.setMinZoom(map.getZoom());
+}
+
+function unlockMap() {
+    mapLocked = false;
+    map.options.maxBoundsViscosity = 0.0;
+    map.setMaxBounds(VIETNAM_BOUNDS);
+    map.setMinZoom(4);
 }
 
 // Setup event listeners
@@ -57,163 +128,6 @@ function setupEventListeners() {
 
     map.on('zoomend', checkZoomState);
     map.on('moveend', checkZoomState);
-    checkZoomState();
-}
-
-// Confirm map selection, lock boundaries, and fetch real-world data
-async function confirmMapSelection() {
-    // LOCK MAP BOUNDARIES IMMEDIATELY
-    lockMap();
-    
-    // Update UI status to processing
-    const confirmBtn = document.getElementById('confirmMapBtn');
-    confirmBtn.textContent = 'Processing Data...';
-    confirmBtn.disabled = true;
-    confirmBtn.style.opacity = '0.7';
-
-    const bounds = map.getBounds();
-    const mapBounds = {
-        north: bounds.getNorth(),
-        south: bounds.getSouth(),
-        east: bounds.getEast(),
-        west: bounds.getWest()
-    };
-
-    try {
-        console.log('1. Fetching real-world map data from Overpass API...');
-        const overpassQuery = `
-            [out:json][timeout:25];
-            (way["highway"](${mapBounds.south}, ${mapBounds.west}, ${mapBounds.north}, ${mapBounds.east}););
-            out body; >; out skel qt;
-        `;
-        
-        const overpassUrl = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`;
-        const overpassResponse = await fetch(overpassUrl);
-        if (!overpassResponse.ok) throw new Error('Failed to fetch data from Overpass API');
-        const overpassData = await overpassResponse.json();
-
-        console.log('2. Processing coordinates to extract roads and intersections...');
-        const nodes = {};
-        const nodeCount = {}; 
-        const roads = [];
-        const intersections = [];
-
-        overpassData.elements.forEach(el => {
-            if (el.type === 'node') nodes[el.id] = [el.lat, el.lon];
-        });
-
-        overpassData.elements.forEach(el => {
-            if (el.type === 'way' && el.nodes) {
-                const roadCoords = [];
-                el.nodes.forEach(nodeId => {
-                    if (nodes[nodeId]) {
-                        roadCoords.push(nodes[nodeId]);
-                        nodeCount[nodeId] = (nodeCount[nodeId] || 0) + 1;
-                    }
-                });
-                if (roadCoords.length > 1) {
-                    roads.push({
-                        id: el.id,
-                        name: el.tags?.name || (el.tags?.highway ? `Highway ${el.tags.highway}` : "Unnamed Road"),
-                        type: el.tags?.highway || "road",
-                        width: 4, 
-                        color: "#667eea",
-                        coordinates: roadCoords
-                    });
-                }
-            }
-        });
-
-        for (const [nodeId, count] of Object.entries(nodeCount)) {
-            if (count > 1 && nodes[nodeId]) {
-                intersections.push({
-                    id: parseInt(nodeId),
-                    name: "Intersection " + nodeId,
-                    type: "intersection",
-                    color: "#ff4500",
-                    coordinates: nodes[nodeId]
-                });
-            }
-        }
-
-        const realMapData = {
-            bounds: mapBounds, roads: roads, intersections: intersections, vehicles: []
-        };
-
-        console.log('3. Sending processed data to C++ Backend...');
-        const response = await fetch(`${BACKEND_URL}/api/confirm-map`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(realMapData)
-        });
-
-        if (!response.ok) throw new Error(`Backend server error: ${await response.text()}`);
-        
-        console.log('4. Triggering map.json download...');
-        const responseData = await response.text();
-        const blob = new Blob([responseData], { type: "application/json" });
-        const downloadUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = 'map.json';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(downloadUrl);
-
-        // Switch UI to Simulation Mode
-        document.getElementById('initialControls').classList.add('hidden');
-        document.getElementById('simulationControls').classList.remove('hidden');
-        document.getElementById('mapStatus').textContent = 'Map Locked';
-        document.getElementById('mapStatus').classList.remove('unlocked');
-        document.getElementById('mapStatus').classList.add('locked');
-
-        await loadMapData();
-
-    } catch (error) {
-        console.error('Operation failed:', error);
-        alert(`An error occurred:\n${error.message}`);
-        unlockMap();
-    } finally {
-        confirmBtn.textContent = 'Confirm Map Selection';
-    }
-}
-
-// Lock the camera strictly to the current view (Hard Lockcam)
-function lockMap() {
-    mapLocked = true;
-    
-    const currentBounds = map.getBounds();
-    const currentZoom = map.getZoom();
-    
-    console.log(`[System] Camera hard locked at zoom level ${currentZoom}`);
-    
-    // Set absolute solid invisible wall (viscosity 1.0 means no elasticity)
-    map.options.maxBoundsViscosity = 1.0;
-    map.setMaxBounds(currentBounds);
-    
-    // Prevent zooming out past the camera's original lock state
-    map.setMinZoom(currentZoom);
-    
-    // Clear dynamic UI warning messages if any
-    const warningMsg = document.getElementById('zoomWarning');
-    if (warningMsg) warningMsg.textContent = '';
-}
-
-// Unlock the camera and restore free roam capability
-function unlockMap() {
-    mapLocked = false;
-    
-    console.log('[System] Camera unlocked back to free roam');
-    
-    // Disable the solid boundary effect
-    map.options.maxBoundsViscosity = 0.0;
-    
-    // Restore default configuration values
-    map.setMaxBounds(VIETNAM_BOUNDS);
-    map.setMinZoom(4); // Match the original minZoom from initMap setup
-    
-    // Re-evaluate the dynamic UI controls immediately
     checkZoomState();
 }
 
@@ -260,15 +174,15 @@ async function loadMapData() {
         renderMapElements();
     } catch (error) {
         console.error('Error loading map data:', error);
-        // Fallback to local map.json if backend unavailable
+        // Fallback to local traffic_network.json if backend unavailable
         loadLocalMapData();
     }
 }
 
-// Load local map.json as fallback
+// Load local traffic_network.json as fallback
 async function loadLocalMapData() {
     try {
-        const response = await fetch('../data/map.json');
+        const response = await fetch('../data/traffic_network.json');
         if (!response.ok) throw new Error('Failed to load local map data');
 
         mapData = await response.json();

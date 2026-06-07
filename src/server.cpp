@@ -1,70 +1,52 @@
 #include "../include/server.h"
 #include <fstream>
-#include <sstream>
 #include <iostream>
 #include <filesystem>
-#include <cmath>
 
 namespace fs = std::filesystem;
 
-TrafficSimulatorServer::TrafficSimulatorServer(int port)
-    : port(port), running(false) {
+TrafficSimulatorServer::TrafficSimulatorServer(int port) : port(port), running(false) {
     setupRoutes();
 }
 
-TrafficSimulatorServer::~TrafficSimulatorServer() {
-    stop();
-}
+TrafficSimulatorServer::~TrafficSimulatorServer() { stop(); }
 
 void TrafficSimulatorServer::setupRoutes() {
-    // CORS middleware
+    // CORS Middleware: Allow Frontend (port 5500) to communicate with C++ API (port 8080)
     auto& ctx = app.get_middleware<crow::CORSHandler>();
-    ctx
-        .global()
-        .headers("Content-Type", "Accept")
-        .methods("POST"_method, "GET"_method, "OPTIONS"_method)
-        .origin("*");
+    ctx.global()
+       .headers("Content-Type", "Accept")
+       .methods("POST"_method, "GET"_method, "OPTIONS"_method)
+       .origin("*");
 
-    // GET /api/map-data - Retrieve current map data
-    CROW_ROUTE(app, "/api/map-data").methods("GET"_method)
-    ([this](const crow::request&, crow::response& res) {
-        auto data = loadMapData();
+    // GET: Return traffic_network.json to Frontend for rendering
+    CROW_ROUTE(app, "/api/map-data").methods("GET"_method)([this](const crow::request&, crow::response& res) {
         res.set_header("Content-Type", "application/json");
-        res.body = data.dump(2);
+        res.body = loadMapData().dump();
         res.code = 200;
-        res.end();
+        res.end(); // IMPORTANT: res.end() must be called to close the HTTP connection
     });
 
-    // POST /api/confirm-map - Receive real map data from Frontend and save it
-    CROW_ROUTE(app, "/api/confirm-map").methods("POST"_method)
-    ([this](const crow::request& req, crow::response& res) {
-        std::cout << "DEBUG: Received confirm-map request with real Overpass data" << std::endl;
-        
+    // POST: Receive processed map data from Frontend -> Save to traffic_network.json
+    CROW_ROUTE(app, "/api/confirm-map").methods("POST"_method)([this](const crow::request& req, crow::response& res) {
+        std::cout << "[Backend] Received map data payload from Frontend." << std::endl;
         try {
-            // Parse the complete JSON data containing real roads and intersections sent from JS
-            auto mapData = json::parse(req.body);
+            auto mapData = json::parse(req.body); // Parse JSON string into an Object
             
-            // Save data directly into map.json file
             if (saveMapData(mapData)) {
-                std::cout << "DEBUG: Real map data saved successfully" << std::endl;
-                res.set_header("Content-Type", "application/json");
-                res.body = mapData.dump(2);
                 res.code = 200;
-                res.end();
+                res.body = mapData.dump();
             } else {
-                std::cerr << "DEBUG: Failed to save map data" << std::endl;
-                res.set_header("Content-Type", "application/json");
-                res.body = R"({"error": "Failed to save map data"})";
-                res.code = 500;
-                res.end();
+                res.code = 500; // Internal Server Error
+                res.body = R"({"error": "I/O Error while writing traffic_network.json to disk"})";
             }
         } catch (const std::exception& e) {
-            std::cerr << "DEBUG: Exception caught: " << e.what() << std::endl;
-            res.set_header("Content-Type", "application/json");
+            res.code = 400; // Bad Request (JSON syntax error)
             res.body = json({{"error", e.what()}}).dump();
-            res.code = 400;
-            res.end();
+            std::cerr << "[Backend] Exception caught: " << e.what() << std::endl;
         }
+        res.set_header("Content-Type", "application/json");
+        res.end(); 
     });
 
     // POST /api/add-road - Add a new road
@@ -183,134 +165,40 @@ void TrafficSimulatorServer::setupRoutes() {
 
 void TrafficSimulatorServer::start() {
     running = true;
-    std::cout << "Starting Traffic Simulator Server on port " << port << "..." << std::endl;
-    
+    std::cout << "[Backend] Traffic Simulator Server is starting on port " << port << "..." << std::endl;
     app.port(port).multithreaded().run();
 }
 
-void TrafficSimulatorServer::stop() {
-    running = false;
-}
+void TrafficSimulatorServer::stop() { running = false; }
 
 std::string TrafficSimulatorServer::getMapDataFilePath() const {
-    fs::path mapPath = fs::current_path() / "data" / "map.json";
-    return mapPath.string();
-}
-
-json TrafficSimulatorServer::generateMapData(const json& bounds) {
-    json mapData;
-    mapData["bounds"] = bounds;
-    mapData["roads"] = json::array();
-    mapData["intersections"] = json::array();
-    mapData["vehicles"] = json::array();
-
-    // Generate sample roads based on bounds
-    double north = bounds["north"].get<double>();
-    double south = bounds["south"].get<double>();
-    double east = bounds["east"].get<double>();
-    double west = bounds["west"].get<double>();
-
-    // Create a grid of roads
-    json road1;
-    road1["id"] = 1;
-    road1["name"] = "Main Street";
-    road1["type"] = "primary";
-    road1["color"] = "#ff0000";
-    road1["width"] = 4;
-    road1["coordinates"] = json::array();
-    road1["coordinates"].push_back(json::array({(north + south) / 2, west}));
-    road1["coordinates"].push_back(json::array({(north + south) / 2, east}));
-    mapData["roads"].push_back(road1);
-
-    json road2;
-    road2["id"] = 2;
-    road2["name"] = "Second Avenue";
-    road2["type"] = "primary";
-    road2["color"] = "#0000ff";
-    road2["width"] = 4;
-    road2["coordinates"] = json::array();
-    road2["coordinates"].push_back(json::array({north, (east + west) / 2}));
-    road2["coordinates"].push_back(json::array({south, (east + west) / 2}));
-    mapData["roads"].push_back(road2);
-
-    // Create intersections at crossings
-    json intersection;
-    intersection["id"] = 1;
-    intersection["name"] = "Main Intersection";
-    intersection["type"] = "intersection";
-    intersection["color"] = "#ff7f50";
-    intersection["coordinates"] = json::array({(north + south) / 2, (east + west) / 2});
-    mapData["intersections"].push_back(intersection);
-
-    return mapData;
+    return (fs::current_path() / "data" / "traffic_network.json").string();
 }
 
 bool TrafficSimulatorServer::saveMapData(const json& data) {
     try {
-        std::string filePath = getMapDataFilePath();
+        std::string path = getMapDataFilePath();
+        fs::create_directories(fs::path(path).parent_path()); // Ensure 'data' directory exists
         
-        // Ensure data directory exists
-        fs::path dataDir = fs::path(filePath).parent_path();
-        if (!fs::exists(dataDir)) {
-            fs::create_directories(dataDir);
-        }
-
-        // Write to file
-        std::ofstream file(filePath);
-        if (!file.is_open()) {
-            std::cerr << "Failed to open file: " << filePath << std::endl;
-            return false;
-        }
-
-        file << data.dump(2);
-        file.close();
-
-        std::cout << "Map data saved to: " << filePath << std::endl;
+        std::ofstream file(path);
+        file << data.dump(2); // Write JSON with 2-space indentation for readability
+        std::cout << "[Backend] Successfully saved traffic_network.json!" << std::endl;
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Error saving map data: " << e.what() << std::endl;
-        return false;
+        std::cerr << "[Backend] File writing failed: " << e.what() << std::endl;
+        return false; 
     }
 }
 
 json TrafficSimulatorServer::loadMapData() {
     try {
-        std::string filePath = getMapDataFilePath();
-        
-        if (!fs::exists(filePath)) {
-            // Return empty map data if file doesn't exist
-            json emptyData;
-            emptyData["roads"] = json::array();
-            emptyData["intersections"] = json::array();
-            emptyData["vehicles"] = json::array();
-            return emptyData;
-        }
-
-        std::ifstream file(filePath);
+        std::ifstream file(getMapDataFilePath());
         if (!file.is_open()) {
-            throw std::runtime_error("Failed to open map.json");
+            std::cout << "[Backend] traffic_network.json not found. Returning empty dataset." << std::endl;
+            return json({{"roads", json::array()}, {"intersections", json::array()}});
         }
-
-        json root = json::parse(file);
-        file.close();
-
-        return root;
-    } catch (const std::exception& e) {
-        std::cerr << "Error loading map data: " << e.what() << std::endl;
-        json emptyData;
-        emptyData["roads"] = json::array();
-        emptyData["intersections"] = json::array();
-        emptyData["vehicles"] = json::array();
-        return emptyData;
+        return json::parse(file);
+    } catch (...) {
+        return json({{"roads", json::array()}, {"intersections", json::array()}});
     }
-}
-
-std::vector<std::pair<double, double>> TrafficSimulatorServer::fetchRoadCoordinates(
-    double north, double south, double east, double west) {
-    // This would typically fetch real road data from an API like OpenStreetMap
-    // For now, we'll return sample coordinates
-    std::vector<std::pair<double, double>> coordinates;
-    coordinates.push_back({(north + south) / 2, west});
-    coordinates.push_back({(north + south) / 2, east});
-    return coordinates;
 }
