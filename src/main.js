@@ -31,6 +31,12 @@ async function confirmMapSelection() {
         return alert("Please zoom in closer (level 15+) to avoid server overload!");
     }
 
+    //Notification Waiting to get Data
+    const confirmBtn = document.getElementById('confirmMapBtn');
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "⏳ Getting Data & Processing Algorithm...";
+    confirmBtn.style.cursor = "wait";
+
     lockMap(); // Lock the camera immediately
     const b = map.getBounds();
     const mapBounds = { north: b.getNorth(), south: b.getSouth(), east: b.getEast(), west: b.getWest() };
@@ -42,33 +48,57 @@ async function confirmMapSelection() {
         const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
         const { elements } = await res.json();
 
-        console.log('[Frontend] 2. Processing and cleaning data...');
+        console.log('[Frontend] 2. Processing and cleaning data with Layer Check...');
         // 2. Data Pre-processing: Simplify using Object and Array methods
-        const nodes = elements.filter(e => e.type === 'node').reduce((acc, n) => { acc[n.id] = [n.lat, n.lon]; return acc; }, {});
-        const nodeCount = {}; 
+        const nodes = elements.filter(e => e.type === 'node').reduce((acc, n) => { 
+            acc[n.id] = [n.lat, n.lon]; 
+            return acc; 
+        }, {});
+        
+        // We use nodeUsage to store the frequence of each Layer
+        const nodeUsage = {}; 
         const roads = [];
 
+        // Browsing all ways
         elements.filter(e => e.type === 'way' && e.nodes).forEach(way => {
+            // Get layer of Road (if don't have tag, the default tag will 0)
+            const layer = way.tags?.layer ? parseInt(way.tags.layer) : 0;
+
             const coords = way.nodes.map(id => {
-                if (nodes[id]) nodeCount[id] = (nodeCount[id] || 0) + 1; // Count node frequency
+                if (nodes[id]) {
+                    if (!nodeUsage[id]) nodeUsage[id] = {};
+                    // Count the times appearance of this node was used on the same layer
+                    nodeUsage[id][layer] = (nodeUsage[id][layer] || 0) + 1; 
+                }
                 return nodes[id];
-            }).filter(Boolean); // Remove undefined nodes
+            }).filter(Boolean);
 
             if (coords.length > 1) {
                 roads.push({
                     id: way.id,
                     name: way.tags?.name || `Road ${way.tags?.highway || ''}`,
                     type: "road", 
+                    layer: layer, // Store layer to convert C++
                     width: 1,
                     coordinates: coords
                 });
             }
         });
 
-        // Nodes present on >1 road are Intersections
-        const intersections = Object.entries(nodeCount)
-            .filter(([id, count]) => count > 1 && nodes[id])
-            .map(([id]) => ({ id: Number(id), type: "intersection", coordinates: nodes[id] }));
+        // Filter Intersection: Only take intersection points on the SAME LAYER
+        const intersections = [];
+        Object.entries(nodeUsage).forEach(([id, layers]) => {
+            Object.entries(layers).forEach(([layer, count]) => {
+                if (count > 1 && nodes[id]) {
+                    intersections.push({ 
+                        id: Number(id), 
+                        type: "intersection", 
+                        layer: parseInt(layer),
+                        coordinates: nodes[id] 
+                    });
+                }
+            });
+        });
 
         console.log('[Frontend] 3. Sending processed data to C++ Backend...');
         // 3. Send "clean" data to C++ Backend for storage
@@ -93,6 +123,11 @@ async function confirmMapSelection() {
         console.error('[Frontend] Error:', error);
         alert(error.message);
         unlockMap(); // Unlock map if an error occurs
+    } finally {
+        // --- Return the original status ---
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Confirm Map Selection";
+        confirmBtn.style.cursor = "pointer";
     }
 }
 
