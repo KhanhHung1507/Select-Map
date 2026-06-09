@@ -202,7 +202,7 @@ function addElement(type) {
 // Load map data from backend
 async function loadMapData() {
     try {
-        const response = await fetch(`${BACKEND_URL}/api/map-data`); // Chuyển thành GET và đúng endpoint
+        const response = await fetch(`${BACKEND_URL}/api/map-data`); // Convert to GET and correct endpoint
         if (!response.ok) throw new Error('Failed to load map data');
 
         mapData = await response.json();
