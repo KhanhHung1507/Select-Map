@@ -1,4 +1,4 @@
-#include "../include/server.h"
+#include "../../include/Server/server.h"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -183,6 +183,7 @@ bool TrafficSimulatorServer::saveMapData(const json& data) {
         std::ofstream file(path);
         file << data.dump(2); // Write JSON with 2-space indentation for readability
         std::cout << "[Backend] Successfully saved traffic_network.json!" << std::endl;
+      
         return true;
     } catch (const std::exception& e) {
         std::cerr << "[Backend] File writing failed: " << e.what() << std::endl;
