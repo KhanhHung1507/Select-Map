@@ -32,6 +32,11 @@ export async function confirmMapSelection() {
 
         elements.filter(e => e.type === 'way' && e.nodes).forEach(way => {
             const layer = way.tags?.layer ? parseInt(way.tags.layer) : 0;
+            
+            const isOneWay = (way.tags?.oneway === 'yes' || way.tags?.oneway === 'true' || way.tags?.oneway === '1');
+            
+            const laneCount = way.tags?.lanes ? parseInt(way.tags.lanes) : (isOneWay ? 1 : 2);
+
             const coords = way.nodes.map(id => {
                 if (nodes[id]) {
                     if (!nodeUsage[id]) nodeUsage[id] = {};
@@ -46,7 +51,12 @@ export async function confirmMapSelection() {
                     name: way.tags?.name || `Road ${way.tags?.highway || ''}`,
                     type: "road", 
                     layer: layer, 
-                    width: 1,
+                    
+                    oneway: isOneWay,
+                    lanes: laneCount,
+                    // ---------------------------------------
+                    
+                    width: laneCount * 2, 
                     coordinates: coords
                 });
             }
