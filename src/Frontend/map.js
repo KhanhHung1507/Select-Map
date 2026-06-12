@@ -1,12 +1,30 @@
 import { VIETNAM_BOUNDS, appState } from './config.js';
 import { updateInfoPanel } from './ui.js';
 
+const regionColors = [
+    "#3388ff", // Default 
+    "#e6194B", // Region 1 
+    "#3cb44b", // Region 2 
+    "#ffe119", // Region 3 
+    "#4363d8", // Region 4 
+    "#f58231", // Region 5 
+    "#911eb4", // Region 6 
+    "#42d4f4", // Region 7 
+    "#f032e6", // Region 8 
+    "#bfef45"  // Region 9 
+];
+
+function getRegionColor(regionId) {
+    if (!regionId || regionId < 1) return regionColors[0];
+    return regionColors[regionId % regionColors.length];
+}
+
 export function initMap() {
     appState.map = L.map('map').setView([15.8700, 106.6837], 6);
     appState.map.setMaxBounds(VIETNAM_BOUNDS);
-    
-    appState.map.on('drag', () => { 
-        if (!appState.mapLocked) appState.map.panInsideBounds(VIETNAM_BOUNDS, { animate: false }); 
+
+    appState.map.on('drag', () => {
+        if (!appState.mapLocked) appState.map.panInsideBounds(VIETNAM_BOUNDS, { animate: false });
     });
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxNativeZoom: 19, maxZoom: 20 }).addTo(appState.map);
@@ -37,11 +55,13 @@ export function renderMapElements() {
 
 function renderRoad(road) {
     if (!road.coordinates || road.coordinates.length < 2) return;
+    const regionColor = getRegionColor(road.region);
     const polyline = L.polyline(road.coordinates, {
-        color: road.color || '#666',
-        weight: road.width || 3,
+        color: regionColor,
+        weight: road.width || 4,
         opacity: 0.8
-    }).addTo(appState.map);
+    }).addTo(appState.map)
+        .bindPopup(`<b>Road:</b> ${road.name || 'Unnamed'}<br><b>Region:</b> ${road.region || 'Unknown'}`);
 
     polyline.data = road;
     polyline.on('click', () => selectObject(road, 'road'));
@@ -49,14 +69,15 @@ function renderRoad(road) {
 
 function renderIntersection(intersection) {
     if (!intersection.coordinates) return;
-    const circle = L.circleMarker(intersection.coordinates, {
-        radius: 8,
-        fillColor: intersection.color || '#ff7f50',
-        color: '#ff4500',
-        weight: 2,
-        opacity: 0.8,
-        fillOpacity: 0.8
-    }).addTo(appState.map);
+    const regionColor = getRegionColor(intersection.region);
+    const circle = L.circleMarker([intersection.coordinates[0], intersection.coordinates[1]], {
+        color: "#ffffff",
+        weight: 1.5,
+        fillColor: regionColor,
+        fillOpacity: 0.9,
+        radius: 6
+    }).addTo(appState.map)
+        .bindPopup(`<b>Intersection ID:</b> ${intersection.id}<br><b>Region:</b> ${intersection.region || 'Unknown'}`);
 
     circle.data = intersection;
     circle.on('click', () => selectObject(intersection, 'intersection'));

@@ -1,5 +1,6 @@
 #include "../../include/Server/server.h"
 #include "../../include/utils/FileHandler.h" 
+#include "../../include/utils/GraphCleaner.h"
 #include <iostream>
 
 TrafficSimulatorServer::TrafficSimulatorServer(int port) : port(port), running(false) {
@@ -29,6 +30,8 @@ void TrafficSimulatorServer::setupRoutes() {
         try {
             auto mapData = json::parse(req.body); 
             
+            mapData = GraphCleaner::keepLargestConnectedComponent(mapData);
+
             if (FileHandler::saveMapData(mapData)) {
                 res.code = 200;
                 res.body = mapData.dump();
