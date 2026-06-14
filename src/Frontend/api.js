@@ -114,8 +114,7 @@ export async function confirmMapSelection() {
 
             const coords = way.nodes.map(id => {
                 if (nodes[id]) {
-                    if (!nodeUsage[id]) nodeUsage[id] = {};
-                    nodeUsage[id][layer] = (nodeUsage[id][layer] || 0) + 1; 
+                    nodeUsage[id] = (nodeUsage[id] || 0) + 1; 
                 }
                 return nodes[id];
             }).filter(Boolean);
@@ -125,7 +124,7 @@ export async function confirmMapSelection() {
                     id: way.id,
                     name: way.tags?.name || `Road ${way.tags?.highway || ''}`,
                     type: "road", 
-                    layer: layer, 
+                    layer: layer,
                     oneway: isOneWay,
                     lanes: laneCount,
                     width: laneCount * 2, 
@@ -135,14 +134,15 @@ export async function confirmMapSelection() {
         });
 
         const intersections = [];
-        Object.entries(nodeUsage).forEach(([id, layers]) => {
-            Object.entries(layers).forEach(([layer, count]) => {
-                if (count > 1 && nodes[id]) {
-                    intersections.push({ 
-                        id: Number(id), type: "intersection", layer: parseInt(layer), coordinates: nodes[id] 
-                    });
-                }
-            });
+        Object.entries(nodeUsage).forEach(([id, count]) => {
+            if (count > 1 && nodes[id]) {
+                intersections.push({ 
+                    id: Number(id), 
+                    type: "intersection", 
+                    layer: 0, 
+                    coordinates: nodes[id] 
+                });
+            }
         });
 
         console.log('[Frontend] 3. Sending processed data to C++ Backend...');
